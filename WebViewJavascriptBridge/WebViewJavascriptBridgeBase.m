@@ -61,12 +61,18 @@ static int logMaxLength = 500;
     [self _queueMessage:message];
 }
 
+/*
+ 这个方法主要是做消息解析
+ */
 - (void)flushMessageQueue:(NSString *)messageQueueString{
     if (messageQueueString == nil || messageQueueString.length == 0) {
         NSLog(@"WebViewJavascriptBridge: WARNING: ObjC got nil while fetching the message queue JSON from webview. This can happen if the WebViewJavascriptBridge JS is not currently present in the webview, e.g if the webview just loaded a new page.");
         return;
     }
 
+    /*
+     把消息解析到数组里面
+     */
     id messages = [self _deserializeMessageJSON:messageQueueString];
     for (WVJBMessage* message in messages) {
         if (![message isKindOfClass:[WVJBMessage class]]) {
@@ -76,19 +82,32 @@ static int logMaxLength = 500;
         [self _log:@"RCVD" json:message];
         
         NSString* responseId = message[@"responseId"];
+        /*
+         如果 responseId 存在，说明是原生调 js 方法的回调消息
+         */
         if (responseId) {
+            // 通过 responseId 拿到回调的 callback，执行回调
             WVJBResponseCallback responseCallback = _responseCallbacks[responseId];
             responseCallback(message[@"responseData"]);
             [self.responseCallbacks removeObjectForKey:responseId];
         } else {
+            
+            /*
+             没有 responseId ，说明是 js 调用原生的方法
+             */
             WVJBResponseCallback responseCallback = NULL;
+            // 拿出消息里面的回调 id
             NSString* callbackId = message[@"callbackId"];
             if (callbackId) {
+                /*
+                 如果回调 id 存在，说明 js 需要回调,生成一个回调block
+                 */
                 responseCallback = ^(id responseData) {
                     if (responseData == nil) {
                         responseData = [NSNull null];
                     }
                     
+                    // 客户端处理完消息执行 callback 后，将数据跟 callbackId 组装成一个对象，给 JS 发送回调消息.
                     WVJBMessage* msg = @{ @"responseId":callbackId, @"responseData":responseData };
                     [self _queueMessage:msg];
                 };
@@ -98,6 +117,7 @@ static int logMaxLength = 500;
                 };
             }
             
+            // 拿到客户端注册的对应消息的 block
             WVJBHandler handler = self.messageHandlers[message[@"handlerName"]];
             
             if (!handler) {
@@ -105,11 +125,15 @@ static int logMaxLength = 500;
                 continue;
             }
             
+            // 执行消息
             handler(message[@"data"], responseCallback);
         }
     }
 }
 
+/*
+ 收到加载 WebViewJavaScriptBridge 的消息后，将 WebViewJavaScriptBridge_JS 里面的 js 代码注入到 js 中。
+ */
 - (void)injectJavascriptFile {
     NSString *js = WebViewJavascriptBridge_js();
     [self _evaluateJavascript:js];
@@ -167,7 +191,13 @@ static int logMaxLength = 500;
     [self.delegate _evaluateJavascript:javascriptCommand];
 }
 
+/*
+ 向 js 发送消息
+ */
 - (void)_queueMessage:(WVJBMessage*)message {
+    /*
+     startupMessageQueue 是在 js 代码还没有注入到 webView 里面时，用来保存消息的，注入代码后会执行这个队列里面的全部消息
+     */
     if (self.startupMessageQueue) {
         [self.startupMessageQueue addObject:message];
     } else {
@@ -175,6 +205,10 @@ static int logMaxLength = 500;
     }
 }
 
+/*
+ 组装消息，通过调用`WebViewJavascriptBridge._handleMessageFromObjC('%@');`发送到 js
+ 这个消息会在主线程调用
+ */
 - (void)_dispatchMessage:(WVJBMessage*)message {
     NSString *messageJSON = [self _serializeMessage:message pretty:NO];
     [self _log:@"SEND" json:messageJSON];
